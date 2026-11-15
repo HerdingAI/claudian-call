@@ -1,0 +1,3 @@
+- Added F-Droid and direct distribution flavors (F-Droid build omits self-updater permissions).
+- Added 1-tap QR / claudian://pair deep-link pairing and LAN mDNS auto-discovery (_claudian._tcp).
+- Hardened streaming SSE stability and activeTurnId cancellation guards.

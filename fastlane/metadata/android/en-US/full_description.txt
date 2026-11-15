@@ -1,0 +1,7 @@
+Claudian Call turns your Android phone into a screen-off, hands-free voice interface for local coding agents (Claude Code, Antigravity, and OpenCode) running on your workstation via Claudian Bridge.
+
+Features:
+* Screen-off Foreground Service with hardware acoustic echo cancellation and Bluetooth/earpiece/speaker routing.
+* 2-layer noise-resistant barge-in using DSP speech-band filtering and on-device Silero VAD v6.
+* One-tap Compound Engineering workflow chips, workspace folder switching, 5-second session recaps, and saving notes to your Obsidian vault.
+* Works out of the box over LAN (mDNS auto-discovery) or Tailscale with 1-tap QR pairing from Claudian Bridge's setup script.

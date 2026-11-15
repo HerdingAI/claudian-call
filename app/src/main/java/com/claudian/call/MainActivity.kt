@@ -10,6 +10,8 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -103,11 +105,34 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         api = BridgeApi { CallSettings.load(this) }
+        handlePairingIntent(intent)
         selectedSessionId = CallSettings.load(this).lastSessionId.ifBlank { null }
         buildUi()
         bindService(Intent(this, VoiceCallService::class.java), conn, Context.BIND_AUTO_CREATE)
         refreshSessionsAndHealth()
-        checkForAppUpdate(manual = false)
+        if (BuildConfig.ENABLE_SELF_UPDATE) {
+            checkForAppUpdate(manual = false)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (handlePairingIntent(intent)) {
+            updateProviderBadge()
+            refreshSessionsAndHealth()
+        }
+    }
+
+    private fun handlePairingIntent(intent: Intent?): Boolean {
+        val data = intent?.data ?: return false
+        if (data.scheme != "claudian" || data.host != "pair") return false
+        val url = data.getQueryParameter("url")?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return false
+        val token = data.getQueryParameter("token")?.trim().orEmpty()
+        val updated = CallSettings.load(this).copy(bridgeUrl = url, authToken = token)
+        CallSettings.save(this, updated)
+        Toast.makeText(this, "Paired with $url", Toast.LENGTH_SHORT).show()
+        return true
     }
 
     override fun onDestroy() {
@@ -847,7 +872,28 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val urlInput = addField("Bridge URL", s.bridgeUrl)
+        val urlInput = addField("Bridge URL (or paste claudian://pair link)", s.bridgeUrl)
+        val discoverBtn = Button(this).apply {
+            text = "Auto-Discover Bridge on LAN"
+            isAllCaps = false
+            setOnClickListener {
+                text = "Searching LAN..."
+                isEnabled = false
+                discoverBridgeOnLan { foundUrl ->
+                    runOnUiThread {
+                        isEnabled = true
+                        text = "Auto-Discover Bridge on LAN"
+                        if (foundUrl != null) {
+                            urlInput.setText(foundUrl)
+                            Toast.makeText(this@MainActivity, "Found $foundUrl", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this@MainActivity, "No bridge found on LAN", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
+        box.addView(discoverBtn)
         val tokenInput = addField("Auth Token", s.authToken, password = true)
 
         box.addView(TextView(this).apply {
@@ -942,20 +988,33 @@ class MainActivity : AppCompatActivity() {
         }
         box.addView(bargeCheck)
 
-        val updateBtn = Button(this).apply {
-            text = "Check for App Update"
-            isAllCaps = false
-            setOnClickListener { checkForAppUpdate(manual = true) }
+        if (BuildConfig.ENABLE_SELF_UPDATE) {
+            val updateBtn = Button(this).apply {
+                text = "Check for App Update"
+                isAllCaps = false
+                setOnClickListener { checkForAppUpdate(manual = true) }
+            }
+            box.addView(updateBtn)
         }
-        box.addView(updateBtn)
 
         AlertDialog.Builder(this)
             .setTitle("Claudian Call Settings")
             .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("Save") { _, _ ->
+                var rawUrl = urlInput.text.toString().trim().trimEnd('/')
+                var rawToken = tokenInput.text.toString().trim()
+                if (rawUrl.startsWith("claudian://pair")) {
+                    val parsed = Uri.parse(rawUrl)
+                    parsed.getQueryParameter("url")?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() }?.let {
+                        rawUrl = it
+                    }
+                    parsed.getQueryParameter("token")?.trim()?.takeIf { it.isNotBlank() }?.let {
+                        rawToken = it
+                    }
+                }
                 val updated = s.copy(
-                    bridgeUrl = urlInput.text.toString().trim().trimEnd('/'),
-                    authToken = tokenInput.text.toString().trim(),
+                    bridgeUrl = rawUrl,
+                    authToken = rawToken,
                     provider = providers[providerSpinner.selectedItemPosition],
                     model = currentModels.getOrNull(modelSpinner.selectedItemPosition)?.id ?: "",
                     workspaceDir = currentWorkspaces.getOrNull(workspaceSpinner.selectedItemPosition)?.path ?: "",
@@ -1001,6 +1060,51 @@ class MainActivity : AppCompatActivity() {
             putExtra(VoiceCallService.EXTRA_SESSION_ID, selectedSessionId)
         }
         ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun discoverBridgeOnLan(onResult: (String?) -> Unit) {
+        val nsd = getSystemService(Context.NSD_SERVICE) as? NsdManager
+        if (nsd == null) {
+            onResult(null)
+            return
+        }
+        var finished = false
+        lateinit var listener: NsdManager.DiscoveryListener
+        fun complete(url: String?) {
+            if (finished) return
+            finished = true
+            runCatching { nsd.stopServiceDiscovery(listener) }
+            onResult(url)
+        }
+        listener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(regType: String) {}
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                if (finished) return
+                @Suppress("DEPRECATION")
+                nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {}
+                    override fun onServiceResolved(info: NsdServiceInfo) {
+                        val host = info.host?.hostAddress ?: return
+                        val port = info.port.takeIf { it > 0 } ?: 8790
+                        complete("http://$host:$port")
+                    }
+                })
+            }
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
+            override fun onDiscoveryStopped(serviceType: String) {}
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) = complete(null)
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
+        }
+        runCatching {
+            nsd.discoverServices("_claudian._tcp.", NsdManager.PROTOCOL_DNS_SD, listener)
+        }.onFailure {
+            complete(null)
+            return
+        }
+        lifecycleScope.launch {
+            delay(4000)
+            complete(null)
+        }
     }
 
     private fun currentVersionCode(): Long {

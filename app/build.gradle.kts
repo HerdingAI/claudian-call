@@ -15,6 +15,22 @@ android {
         versionName = "0.6.6"
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("fdroid") {
+            dimension = "distribution"
+            buildConfigField("boolean", "ENABLE_SELF_UPDATE", "false")
+        }
+        create("direct") {
+            dimension = "distribution"
+            buildConfigField("boolean", "ENABLE_SELF_UPDATE", "true")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

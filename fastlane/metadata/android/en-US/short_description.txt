@@ -1,0 +1,1 @@
+Screen-off voice-call companion for Claude Code, Antigravity, and OpenCode.
