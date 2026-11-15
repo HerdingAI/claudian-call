@@ -46,6 +46,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
     kotlinOptions {
         jvmTarget = "17"
     }
@@ -59,4 +62,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
+    testImplementation("junit:junit:4.13.2")
+    // android.jar's org.json is stubbed in JVM tests; use the real implementation.
+    testImplementation("org.json:json:20231013")
 }

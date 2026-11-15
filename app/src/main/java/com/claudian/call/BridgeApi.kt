@@ -5,6 +5,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSource
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -344,56 +345,7 @@ class BridgeApi(private val getSettings: () -> CallSettings) {
         call.execute().use { resp ->
             if (!resp.isSuccessful) throw IOException("Chat HTTP ${resp.code}")
             val source = resp.body?.source() ?: throw IOException("Empty chat stream")
-            var eventName = "message"
-            var dataLine = ""
-            while (!source.exhausted()) {
-                val line = source.readUtf8Line() ?: break
-                if (line.isEmpty()) {
-                    if (dataLine.isNotEmpty()) {
-                        dispatchSse(eventName, dataLine, onSession, onStatus, onText, onDone)
-                    }
-                    eventName = "message"
-                    dataLine = ""
-                } else if (line.startsWith("event:")) {
-                    eventName = line.substring(6).trim()
-                } else if (line.startsWith("data:")) {
-                    dataLine = line.substring(5).trim()
-                }
-            }
-            if (dataLine.isNotEmpty()) {
-                dispatchSse(eventName, dataLine, onSession, onStatus, onText, onDone)
-            }
-        }
-    }
-
-    private fun dispatchSse(
-        eventName: String,
-        dataLine: String,
-        onSession: (String) -> Unit,
-        onStatus: (String) -> Unit,
-        onText: (String) -> Unit,
-        onDone: (String?, String) -> Unit
-    ) {
-        val payload = JSONObject(dataLine)
-        when (eventName) {
-            "session" -> {
-                val sid = payload.optString("sessionId")
-                if (sid.isNotEmpty()) onSession(sid)
-            }
-            "status" -> {
-                val st = payload.optString("status")
-                if (st.isNotEmpty()) onStatus(st)
-            }
-            "text" -> {
-                onText(payload.optString("fullText", ""))
-            }
-            "done" -> {
-                val sid = payload.optString("sessionId").takeIf { it.isNotEmpty() && it != "null" }
-                onDone(sid, payload.optString("text", ""))
-            }
-            "error" -> {
-                throw IOException(payload.optString("error", "Chat error"))
-            }
+            SseParser(onSession, onStatus, onText, onDone).readAll(source)
         }
     }
 
@@ -420,6 +372,73 @@ class BridgeApi(private val getSettings: () -> CallSettings) {
             for (s in pcm) buf.putShort(s)
             out.write(buf.array())
             return out.toByteArray()
+        }
+    }
+}
+
+/**
+ * Line-oriented SSE parser for the bridge /chat stream. Pure JVM apart from org.json.
+ * Behavior is intentionally identical to the original inline loop in BridgeApi.streamChat.
+ */
+class SseParser(
+    private val onSession: (String) -> Unit,
+    private val onStatus: (String) -> Unit,
+    private val onText: (String) -> Unit,
+    private val onDone: (String?, String) -> Unit
+) {
+    private var eventName = "message"
+    private var dataLine = ""
+
+    fun onLine(line: String) {
+        if (line.isEmpty()) {
+            if (dataLine.isNotEmpty()) {
+                dispatch(eventName, dataLine)
+            }
+            eventName = "message"
+            dataLine = ""
+        } else if (line.startsWith("event:")) {
+            eventName = line.substring(6).trim()
+        } else if (line.startsWith("data:")) {
+            dataLine = line.substring(5).trim()
+        }
+    }
+
+    /** Flushes a trailing event that was not terminated by a blank line. */
+    fun finish() {
+        if (dataLine.isNotEmpty()) {
+            dispatch(eventName, dataLine)
+        }
+    }
+
+    fun readAll(source: BufferedSource) {
+        while (!source.exhausted()) {
+            val line = source.readUtf8Line() ?: break
+            onLine(line)
+        }
+        finish()
+    }
+
+    private fun dispatch(eventName: String, dataLine: String) {
+        val payload = JSONObject(dataLine)
+        when (eventName) {
+            "session" -> {
+                val sid = payload.optString("sessionId")
+                if (sid.isNotEmpty()) onSession(sid)
+            }
+            "status" -> {
+                val st = payload.optString("status")
+                if (st.isNotEmpty()) onStatus(st)
+            }
+            "text" -> {
+                onText(payload.optString("fullText", ""))
+            }
+            "done" -> {
+                val sid = payload.optString("sessionId").takeIf { it.isNotEmpty() && it != "null" }
+                onDone(sid, payload.optString("text", ""))
+            }
+            "error" -> {
+                throw IOException(payload.optString("error", "Chat error"))
+            }
         }
     }
 }

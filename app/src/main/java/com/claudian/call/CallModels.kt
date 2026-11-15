@@ -47,20 +47,22 @@ data class CallSettings(
 ) {
     companion object {
         private const val PREFS = "claudian_call_prefs"
-        private const val CURRENT_PREFS_VERSION = 2
 
         fun load(ctx: Context): CallSettings {
             val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val savedVersion = p.getInt("prefsVersion", 1)
-            var vadSilence = p.getLong("vadSilenceMs", 1800L)
-            var minSpeech = p.getLong("minSpeechMs", 600L)
-            var bargeIn = p.getBoolean("bargeIn", false)
-            if (savedVersion < CURRENT_PREFS_VERSION) {
-                if (vadSilence < 1200L) vadSilence = 1800L
-                if (minSpeech < 500L) minSpeech = 600L
-                bargeIn = false
+            val migrated = PrefsMigration.migrate(
+                savedVersion,
+                p.getLong("vadSilenceMs", 1800L),
+                p.getLong("minSpeechMs", 600L),
+                p.getBoolean("bargeIn", false)
+            )
+            val vadSilence = migrated.vadSilenceMs
+            val minSpeech = migrated.minSpeechMs
+            val bargeIn = migrated.bargeIn
+            if (savedVersion < PrefsMigration.CURRENT_PREFS_VERSION) {
                 p.edit()
-                    .putInt("prefsVersion", CURRENT_PREFS_VERSION)
+                    .putInt("prefsVersion", PrefsMigration.CURRENT_PREFS_VERSION)
                     .putLong("vadSilenceMs", vadSilence)
                     .putLong("minSpeechMs", minSpeech)
                     .putBoolean("bargeIn", bargeIn)
@@ -104,6 +106,22 @@ data class CallSettings(
                 .putString("mobileSystemPrompt", s.mobileSystemPrompt)
                 .apply()
         }
+    }
+}
+
+/** Pure core of the SharedPreferences version migration (no Android dependencies). */
+object PrefsMigration {
+    const val CURRENT_PREFS_VERSION = 2
+
+    data class VadPrefs(val vadSilenceMs: Long, val minSpeechMs: Long, val bargeIn: Boolean)
+
+    fun migrate(savedVersion: Int, vadSilenceMs: Long, minSpeechMs: Long, bargeIn: Boolean): VadPrefs {
+        if (savedVersion >= CURRENT_PREFS_VERSION) return VadPrefs(vadSilenceMs, minSpeechMs, bargeIn)
+        var vadSilence = vadSilenceMs
+        var minSpeech = minSpeechMs
+        if (vadSilence < 1200L) vadSilence = 1800L
+        if (minSpeech < 500L) minSpeech = 600L
+        return VadPrefs(vadSilence, minSpeech, false)
     }
 }
 
