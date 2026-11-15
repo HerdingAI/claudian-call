@@ -381,7 +381,7 @@ class MainActivity : AppCompatActivity() {
         statusBar.addView(timerText)
         root.addView(statusBar)
 
-        // Compound Engineering workflow chip bar
+        // Quick action chip bar (Recap & Save)
         val wfScroll = android.widget.HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             layoutParams = LinearLayout.LayoutParams(
@@ -393,45 +393,6 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val wfButtons = mutableMapOf<String, Button>()
-        fun refreshWorkflowChips() {
-            val active = CallSettings.load(this).workflow
-            for ((id, btn) in wfButtons) {
-                val isSelected = id == active
-                btn.background = pillBg(
-                    if (isSelected) "#7C5CFF" else "#1B1D24",
-                    if (isSelected) "#9D85FF" else "#2A2D3A",
-                    16
-                )
-                btn.setTextColor(Color.parseColor(if (isSelected) "#FFFFFF" else "#B4B7C5"))
-            }
-        }
-        for (preset in DEFAULT_WORKFLOW_PRESETS) {
-            val chip = Button(this).apply {
-                text = preset.label
-                isAllCaps = false
-                textSize = 12f
-                minWidth = 0
-                minimumWidth = 0
-                minHeight = 0
-                minimumHeight = 0
-                setPadding(dp(12), dp(6), dp(12), dp(6))
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    dp(32)
-                ).apply { marginEnd = dp(6) }
-                setOnClickListener {
-                    it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                    val updated = CallSettings.load(this@MainActivity).copy(workflow = preset.id)
-                    CallSettings.save(this@MainActivity, updated)
-                    refreshWorkflowChips()
-                    updateProviderBadge()
-                }
-            }
-            wfButtons[preset.id] = chip
-            wfRow.addView(chip)
-        }
-        refreshWorkflowChips()
         val recapChip = Button(this).apply {
             text = "↻ Recap"
             isAllCaps = false
@@ -1103,7 +1064,7 @@ class MainActivity : AppCompatActivity() {
                     workspaceDir = currentWorkspaces.getOrNull(workspaceSpinner.selectedItemPosition)?.path ?: "",
                     kokoroVoice = voiceInput.text.toString().trim().ifBlank { "af_heart" },
                     speechRate = rateInput.text.toString().toFloatOrNull() ?: 1.05f,
-                    vadSilenceMs = silenceInput.text.toString().toLongOrNull()?.coerceIn(300L, 3000L) ?: 750L,
+                    vadSilenceMs = silenceInput.text.toString().toLongOrNull()?.coerceIn(500L, 5000L) ?: 1800L,
                     bargeIn = bargeCheck.isChecked
                 )
                 CallSettings.save(this, updated)

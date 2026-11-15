@@ -327,7 +327,6 @@ class BridgeApi(private val getSettings: () -> CallSettings) {
         val payload = JSONObject()
             .put("prompt", prompt)
             .put("provider", s.provider.ifBlank { "claude" })
-            .put("workflow", s.workflow.ifBlank { "general" })
         if (s.model.isNotBlank()) payload.put("model", s.model.trim())
         if (s.workspaceDir.isNotBlank()) payload.put("cwd", s.workspaceDir.trim())
         if (!sessionId.isNullOrBlank()) payload.put("sessionId", sessionId)

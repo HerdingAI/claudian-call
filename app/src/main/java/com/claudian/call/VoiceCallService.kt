@@ -75,6 +75,8 @@ class VoiceCallService : Service() {
     private var turnJob: Job? = null
     private var activeChatCall: Call? = null
     private val activeTurnId = java.util.concurrent.atomic.AtomicLong(0L)
+    private val queueLock = Any()
+    private val pendingTranscripts = mutableListOf<String>()
 
     private val ttsGeneration = AtomicInteger(0)
     private val ttsQueue = LinkedBlockingQueue<Pair<Int, String>>()
@@ -131,6 +133,7 @@ class VoiceCallService : Service() {
         stopActiveTrack()
         activeChatCall?.cancel()
         activeChatCall = null
+        synchronized(queueLock) { pendingTranscripts.clear() }
         turnJob?.cancel()
         ttsSpeaking.set(false)
         _uiState.value = _uiState.value.copy(
@@ -187,6 +190,7 @@ class VoiceCallService : Service() {
         stopActiveTrack()
         activeChatCall?.cancel()
         activeChatCall = null
+        synchronized(queueLock) { pendingTranscripts.clear() }
         turnJob?.cancel()
         turnJob = null
         captureJob?.cancel()
@@ -232,14 +236,12 @@ class VoiceCallService : Service() {
         ttsGeneration.incrementAndGet()
         ttsQueue.clear()
         stopActiveTrack()
-        activeChatCall?.cancel()
-        activeChatCall = null
-        turnJob?.cancel()
         ttsSpeaking.set(false)
         if (_uiState.value.inCall) {
+            val isThinking = turnJob?.isActive == true
             _uiState.value = _uiState.value.copy(
-                phase = if (_uiState.value.isMuted) CallPhase.MUTED else CallPhase.LISTENING,
-                statusNote = if (_uiState.value.isMuted) "Muted" else "Listening..."
+                phase = if (_uiState.value.isMuted) CallPhase.MUTED else if (isThinking) CallPhase.THINKING else CallPhase.LISTENING,
+                statusNote = if (_uiState.value.isMuted) "Muted" else if (isThinking) "Thinking..." else "Listening..."
             )
             updateNotification()
         }
@@ -389,6 +391,8 @@ class VoiceCallService : Service() {
             var speechStartMs = 0L
             var lastVoiceMs = 0L
             var bargeInStreak = 0
+            var onsetStreak = 0
+            val onsetFrames = mutableListOf<ShortArray>()
 
             try {
                 recorder.startRecording()
@@ -400,6 +404,8 @@ class VoiceCallService : Service() {
                     if (state.isMuted) {
                         speaking = false
                         bargeInStreak = 0
+                        onsetStreak = 0
+                        onsetFrames.clear()
                         speechFrames.clear()
                         preRoll.clear()
                         silero?.reset()
@@ -455,26 +461,34 @@ class VoiceCallService : Service() {
                         continue
                     }
 
-                    val listenThreshold = maxOf(settings.vadThreshold, bandAnalyzer.noiseFloorRms * 2.4f)
+                    val listenThreshold = maxOf(settings.vadThreshold, bandAnalyzer.noiseFloorRms * 2.8f)
                     val isSpeech = stats.isSpeechBand &&
                         stats.bandRms >= listenThreshold &&
-                        speechProb >= 0.45f
+                        speechProb >= 0.55f
 
                     val now = System.currentTimeMillis()
                     if (isSpeech) {
                         lastVoiceMs = now
                         if (!speaking) {
-                            speaking = true
-                            speechStartMs = now
-                            speechFrames.clear()
-                            speechFrames.addAll(preRoll)
-                            preRoll.clear()
-                            _uiState.value = _uiState.value.copy(
-                                phase = CallPhase.RECORDING,
-                                statusNote = "Hearing speech..."
-                            )
+                            onsetStreak++
+                            onsetFrames.add(frameCopy)
+                            if (onsetStreak >= 3) { // ~96ms sustained speech before starting capture
+                                speaking = true
+                                speechStartMs = now
+                                speechFrames.clear()
+                                speechFrames.addAll(preRoll)
+                                speechFrames.addAll(onsetFrames)
+                                preRoll.clear()
+                                onsetFrames.clear()
+                                onsetStreak = 0
+                                _uiState.value = _uiState.value.copy(
+                                    phase = CallPhase.RECORDING,
+                                    statusNote = "Hearing speech..."
+                                )
+                            }
+                        } else {
+                            speechFrames.add(frameCopy)
                         }
-                        speechFrames.add(frameCopy)
                     } else if (speaking) {
                         speechFrames.add(frameCopy)
                         if (now - lastVoiceMs >= settings.vadSilenceMs) {
@@ -492,13 +506,22 @@ class VoiceCallService : Service() {
                                 launchTurn(pcm)
                             } else {
                                 speechFrames.clear()
+                                val isThinking = turnJob?.isActive == true
                                 _uiState.value = _uiState.value.copy(
-                                    phase = CallPhase.LISTENING,
-                                    statusNote = "Listening..."
+                                    phase = if (isThinking) CallPhase.THINKING else CallPhase.LISTENING,
+                                    statusNote = if (isThinking) "Thinking..." else "Listening..."
                                 )
                             }
                         }
                     } else {
+                        if (onsetStreak > 0) {
+                            for (f in onsetFrames) {
+                                preRoll.addLast(f)
+                                if (preRoll.size > preRollMaxFrames) preRoll.removeFirst()
+                            }
+                            onsetFrames.clear()
+                            onsetStreak = 0
+                        }
                         bandAnalyzer.updateNoiseFloor(stats.bandRms)
                         preRoll.addLast(frameCopy)
                         if (preRoll.size > preRollMaxFrames) preRoll.removeFirst()
@@ -516,56 +539,79 @@ class VoiceCallService : Service() {
     fun submitTextTurn(rawText: String) {
         val text = rawText.trim()
         if (text.isBlank()) return
-        val myTurnId = activeTurnId.incrementAndGet()
-        ttsGeneration.incrementAndGet()
-        ttsQueue.clear()
-        stopActiveTrack()
-        activeChatCall?.cancel()
-        activeChatCall = null
-        turnJob?.cancel()
-        turnJob = serviceScope.launch {
+        enqueueOrStartTurn(text)
+    }
+
+    private fun launchTurn(pcm: ShortArray) {
+        serviceScope.launch {
             try {
-                executeChatTurn(text)
+                val busy = turnJob?.isActive == true
+                if (!busy) {
+                    _uiState.value = _uiState.value.copy(
+                        phase = CallPhase.TRANSCRIBING,
+                        statusNote = "Transcribing..."
+                    )
+                    updateNotification()
+                }
+
+                val wav = BridgeApi.pcm16ToWav(pcm, 16000)
+                val transcript = api.transcribeWav(wav).trim()
+                if (transcript.isBlank()) {
+                    if (turnJob?.isActive != true && !ttsSpeaking.get()) {
+                        _uiState.value = _uiState.value.copy(
+                            phase = if (_uiState.value.isMuted) CallPhase.MUTED else CallPhase.LISTENING,
+                            statusNote = "Listening..."
+                        )
+                        updateNotification()
+                    }
+                    return@launch
+                }
+
+                enqueueOrStartTurn(transcript)
             } catch (_: CancellationException) {
-                // Interrupted
+                // Service stopped
             } catch (t: Throwable) {
-                if (isExpectedCancellation(t, myTurnId)) return@launch
-                handleTurnError(t)
-            } finally {
-                if (activeTurnId.get() == myTurnId) {
-                    activeChatCall = null
+                if (turnJob?.isActive != true) {
+                    handleTurnError(t)
                 }
             }
         }
     }
 
-    private fun launchTurn(pcm: ShortArray) {
-        val myTurnId = activeTurnId.incrementAndGet()
-        activeChatCall?.cancel()
-        activeChatCall = null
-        turnJob?.cancel()
-        turnJob = serviceScope.launch {
-            try {
+    private fun enqueueOrStartTurn(text: String) {
+        synchronized(queueLock) {
+            if (turnJob?.isActive == true) {
+                pendingTranscripts.add(text)
+                val count = pendingTranscripts.size
                 _uiState.value = _uiState.value.copy(
-                    phase = CallPhase.TRANSCRIBING,
-                    statusNote = "Transcribing..."
+                    statusNote = "Queued ($count): ${text.take(40)}"
                 )
                 updateNotification()
+                return
+            }
+            startTurnJobLocked(text)
+        }
+    }
 
-                val wav = BridgeApi.pcm16ToWav(pcm, 16000)
-                val transcript = api.transcribeWav(wav)
-                if (transcript.isBlank()) {
-                    _uiState.value = _uiState.value.copy(
-                        phase = if (_uiState.value.isMuted) CallPhase.MUTED else CallPhase.LISTENING,
-                        statusNote = "Listening..."
-                    )
-                    updateNotification()
-                    return@launch
+    private fun startTurnJobLocked(initialText: String) {
+        val myTurnId = activeTurnId.incrementAndGet()
+        turnJob = serviceScope.launch {
+            var currentText: String? = initialText
+            try {
+                while (currentText != null && _uiState.value.inCall) {
+                    executeChatTurn(currentText)
+                    currentText = synchronized(queueLock) {
+                        if (pendingTranscripts.isNotEmpty()) {
+                            val combined = pendingTranscripts.joinToString("\n")
+                            pendingTranscripts.clear()
+                            combined
+                        } else {
+                            null
+                        }
+                    }
                 }
-
-                executeChatTurn(transcript)
             } catch (_: CancellationException) {
-                // Interrupted by barge-in or hangup
+                // Interrupted by hangup
             } catch (t: Throwable) {
                 if (isExpectedCancellation(t, myTurnId)) return@launch
                 handleTurnError(t)

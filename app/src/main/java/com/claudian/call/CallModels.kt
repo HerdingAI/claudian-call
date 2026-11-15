@@ -25,21 +25,6 @@ data class BridgeSession(
     val lastActivityAt: Long
 )
 
-data class WorkflowPreset(
-    val id: String,
-    val label: String
-)
-
-val DEFAULT_WORKFLOW_PRESETS = listOf(
-    WorkflowPreset("general", "General"),
-    WorkflowPreset("ce-brainstorm", "Brainstorm"),
-    WorkflowPreset("ce-plan", "Plan"),
-    WorkflowPreset("ce-work", "Build"),
-    WorkflowPreset("ce-code-review", "Review"),
-    WorkflowPreset("ce-debug", "Debug"),
-    WorkflowPreset("ce-compound", "Compound")
-)
-
 const val DEFAULT_VOICE_SYSTEM_PROMPT =
     "You are responding in a live voice call. Lead with the direct answer first, use short natural spoken sentences with clear signposts (First, Second, Next), refer to files by short name instead of full paths, avoid markdown tables, raw URLs, and code blocks unless asked, and end with one clear next step or single decision question."
 
@@ -49,37 +34,51 @@ data class CallSettings(
     val provider: String = "claude",
     val model: String = "haiku",
     val workspaceDir: String = "",
-    val workflow: String = "general",
     val sttLanguage: String = "en",
     val kokoroVoice: String = "af_heart",
     val speechRate: Float = 1.05f,
     val vadThreshold: Float = 0.015f,
-    val vadSilenceMs: Long = 750L,
-    val minSpeechMs: Long = 350L,
-    val bargeIn: Boolean = true,
+    val vadSilenceMs: Long = 1800L,
+    val minSpeechMs: Long = 600L,
+    val bargeIn: Boolean = false,
     val speakerOn: Boolean = false,
     val lastSessionId: String = "",
     val mobileSystemPrompt: String = DEFAULT_VOICE_SYSTEM_PROMPT
 ) {
     companion object {
         private const val PREFS = "claudian_call_prefs"
+        private const val CURRENT_PREFS_VERSION = 2
 
         fun load(ctx: Context): CallSettings {
             val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val savedVersion = p.getInt("prefsVersion", 1)
+            var vadSilence = p.getLong("vadSilenceMs", 1800L)
+            var minSpeech = p.getLong("minSpeechMs", 600L)
+            var bargeIn = p.getBoolean("bargeIn", false)
+            if (savedVersion < CURRENT_PREFS_VERSION) {
+                if (vadSilence < 1200L) vadSilence = 1800L
+                if (minSpeech < 500L) minSpeech = 600L
+                bargeIn = false
+                p.edit()
+                    .putInt("prefsVersion", CURRENT_PREFS_VERSION)
+                    .putLong("vadSilenceMs", vadSilence)
+                    .putLong("minSpeechMs", minSpeech)
+                    .putBoolean("bargeIn", bargeIn)
+                    .apply()
+            }
             return CallSettings(
                 bridgeUrl = p.getString("bridgeUrl", "http://127.0.0.1:8790") ?: "http://127.0.0.1:8790",
                 authToken = p.getString("authToken", "") ?: "",
                 provider = p.getString("provider", "claude") ?: "claude",
                 model = p.getString("model", "haiku") ?: "haiku",
                 workspaceDir = p.getString("workspaceDir", "") ?: "",
-                workflow = p.getString("workflow", "general") ?: "general",
                 sttLanguage = p.getString("sttLanguage", "en") ?: "en",
                 kokoroVoice = p.getString("kokoroVoice", "af_heart") ?: "af_heart",
                 speechRate = p.getFloat("speechRate", 1.05f),
                 vadThreshold = p.getFloat("vadThreshold", 0.015f),
-                vadSilenceMs = p.getLong("vadSilenceMs", 750L),
-                minSpeechMs = p.getLong("minSpeechMs", 350L),
-                bargeIn = p.getBoolean("bargeIn", true),
+                vadSilenceMs = vadSilence,
+                minSpeechMs = minSpeech,
+                bargeIn = bargeIn,
                 speakerOn = p.getBoolean("speakerOn", false),
                 lastSessionId = p.getString("lastSessionId", "") ?: "",
                 mobileSystemPrompt = p.getString("mobileSystemPrompt", DEFAULT_VOICE_SYSTEM_PROMPT) ?: ""
@@ -93,7 +92,6 @@ data class CallSettings(
                 .putString("provider", s.provider)
                 .putString("model", s.model)
                 .putString("workspaceDir", s.workspaceDir)
-                .putString("workflow", s.workflow)
                 .putString("sttLanguage", s.sttLanguage)
                 .putString("kokoroVoice", s.kokoroVoice)
                 .putFloat("speechRate", s.speechRate)
