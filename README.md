@@ -40,3 +40,13 @@ gradle assembleDebug --no-daemon
 ```
 
 Output APK: `app/build/outputs/apk/debug/app-debug.apk` (packaged release copy in `dist/claudian-call.apk`).
+
+## Claudian Suite
+
+- **[Claudian Bridge](https://github.com/HerdingAI/claudian-bridge)** — Workstation HTTP/SSE server required by Claudian Call (exposes Claude Code, Antigravity, OpenCode, `faster-whisper` STT, and Kokoro TTS).
+- **[Claudian Mobile](https://github.com/HerdingAI/claudian-mobile)** — Mobile-compatible Obsidian plugin for iOS, Android, and Desktop over `claudian-bridge`.
+- **[Claudian Voice](https://github.com/HerdingAI/claudian-voice)** — Desktop Obsidian plugin adding local `faster-whisper` STT and Kokoro TTS directly to Claudian.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
