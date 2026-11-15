@@ -39,6 +39,8 @@ import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -70,6 +72,43 @@ class MainActivity : AppCompatActivity() {
     private lateinit var muteBtn: Button
     private lateinit var callBtn: Button
     private lateinit var speakerBtn: Button
+
+    private var qrPendingCallback: ((String, String) -> Unit)? = null
+
+    private val qrLauncher = registerForActivityResult(ScanContract()) { result ->
+        val raw = result.contents?.trim() ?: return@registerForActivityResult
+        val parsed = runCatching { Uri.parse(raw) }.getOrNull()
+        if (parsed?.scheme == "claudian" && parsed.host == "pair") {
+            val url = parsed.getQueryParameter("url")?.trim()?.trimEnd('/') ?: ""
+            val token = parsed.getQueryParameter("token")?.trim() ?: ""
+            if (url.isNotBlank()) {
+                val cb = qrPendingCallback
+                qrPendingCallback = null
+                if (cb != null) {
+                    cb(url, token)
+                } else {
+                    CallSettings.save(this, CallSettings.load(this).copy(bridgeUrl = url, authToken = token))
+                    Toast.makeText(this, "Paired with $url", Toast.LENGTH_SHORT).show()
+                    updateProviderBadge()
+                    refreshSessionsAndHealth()
+                }
+                return@registerForActivityResult
+            }
+        }
+        qrPendingCallback = null
+        Toast.makeText(this, "Unrecognized QR code (expected claudian://pair)", Toast.LENGTH_LONG).show()
+    }
+
+    private fun launchQrScanner(onScanned: ((String, String) -> Unit)? = null) {
+        qrPendingCallback = onScanned
+        val opts = ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setPrompt("Scan the QR code printed by ./setup.sh")
+            setBeepEnabled(false)
+            setOrientationLocked(true)
+        }
+        qrLauncher.launch(opts)
+    }
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -110,9 +149,35 @@ class MainActivity : AppCompatActivity() {
         buildUi()
         bindService(Intent(this, VoiceCallService::class.java), conn, Context.BIND_AUTO_CREATE)
         refreshSessionsAndHealth()
+        if (CallSettings.load(this).authToken.isBlank()) {
+            showFirstRunOnboarding()
+        }
         if (BuildConfig.ENABLE_SELF_UPDATE) {
             checkForAppUpdate(manual = false)
         }
+    }
+
+    private fun showFirstRunOnboarding() {
+        AlertDialog.Builder(this)
+            .setTitle("Connect to Claudian Bridge")
+            .setMessage("Run ./setup.sh on your workstation, then scan its QR code or auto-discover on your LAN.")
+            .setPositiveButton("Scan QR Code") { _, _ -> launchQrScanner() }
+            .setNeutralButton("Auto-Discover LAN") { _, _ ->
+                Toast.makeText(this, "Searching LAN for _claudian._tcp...", Toast.LENGTH_SHORT).show()
+                discoverBridgeOnLan { foundUrl ->
+                    runOnUiThread {
+                        if (foundUrl != null) {
+                            CallSettings.save(this, CallSettings.load(this).copy(bridgeUrl = foundUrl))
+                            Toast.makeText(this, "Found $foundUrl — paste your Auth Token", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this, "No bridge found on LAN", Toast.LENGTH_SHORT).show()
+                        }
+                        showSettingsDialog()
+                    }
+                }
+            }
+            .setNegativeButton("Manual Setup") { _, _ -> showSettingsDialog() }
+            .show()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -873,16 +938,33 @@ class MainActivity : AppCompatActivity() {
         }
 
         val urlInput = addField("Bridge URL (or paste claudian://pair link)", s.bridgeUrl)
-        val discoverBtn = Button(this).apply {
-            text = "Auto-Discover Bridge on LAN"
+        val tokenInput = addField("Auth Token", s.authToken, password = true)
+        val pairRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val scanQrBtn = Button(this).apply {
+            text = "Scan QR Code"
             isAllCaps = false
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener {
-                text = "Searching LAN..."
+                launchQrScanner { scannedUrl, scannedToken ->
+                    urlInput.setText(scannedUrl)
+                    if (scannedToken.isNotBlank()) tokenInput.setText(scannedToken)
+                    Toast.makeText(this@MainActivity, "Scanned $scannedUrl", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        val discoverBtn = Button(this).apply {
+            text = "Discover LAN"
+            isAllCaps = false
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                text = "Searching..."
                 isEnabled = false
                 discoverBridgeOnLan { foundUrl ->
                     runOnUiThread {
                         isEnabled = true
-                        text = "Auto-Discover Bridge on LAN"
+                        text = "Discover LAN"
                         if (foundUrl != null) {
                             urlInput.setText(foundUrl)
                             Toast.makeText(this@MainActivity, "Found $foundUrl", Toast.LENGTH_SHORT).show()
@@ -893,8 +975,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        box.addView(discoverBtn)
-        val tokenInput = addField("Auth Token", s.authToken, password = true)
+        pairRow.addView(scanQrBtn)
+        pairRow.addView(discoverBtn)
+        box.addView(pairRow)
 
         box.addView(TextView(this).apply {
             text = "Provider"

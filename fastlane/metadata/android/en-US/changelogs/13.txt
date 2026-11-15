@@ -1,0 +1,3 @@
+- Added built-in FOSS QR code scanner (ZXing) for 1-scan pairing with claudian-bridge ./setup.sh.
+- Added first-run onboarding prompt when bridge auth token is not yet configured.
+- Disabled AGP DependencyInfoBlock in APK/bundle outputs for F-Droid reproducible builds.

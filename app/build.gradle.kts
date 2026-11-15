@@ -11,8 +11,13 @@ android {
         applicationId = "com.claudian.call"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.6.6"
+        versionCode = 13
+        versionName = "0.6.7"
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     buildFeatures {
@@ -53,4 +58,5 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }
