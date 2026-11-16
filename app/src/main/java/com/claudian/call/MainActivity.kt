@@ -194,9 +194,22 @@ class MainActivity : AppCompatActivity() {
         if (data.scheme != "claudian" || data.host != "pair") return false
         val url = data.getQueryParameter("url")?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return false
         val token = data.getQueryParameter("token")?.trim().orEmpty()
-        val updated = CallSettings.load(this).copy(bridgeUrl = url, authToken = token)
-        CallSettings.save(this, updated)
-        Toast.makeText(this, "Paired with $url", Toast.LENGTH_SHORT).show()
+        if (!BridgeSecurity.isAllowedBridgeUrl(url)) {
+            Toast.makeText(this, "Rejected unsafe bridge URL: $url", Toast.LENGTH_LONG).show()
+            return false
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Pair with this computer?")
+            .setMessage("Save bridge URL $url and update your pairing token?")
+            .setPositiveButton("Pair") { _, _ ->
+                val updated = CallSettings.load(this).copy(bridgeUrl = url, authToken = token)
+                CallSettings.save(this, updated)
+                Toast.makeText(this, "Paired with $url", Toast.LENGTH_SHORT).show()
+                updateProviderBadge()
+                refreshSessionsAndHealth()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
         return true
     }
 
@@ -1181,7 +1194,7 @@ class MainActivity : AppCompatActivity() {
                     .setTitle("Update Available")
                     .setMessage("Claudian Call v${remote.versionName} (build ${remote.versionCode}) is available. You are on build $localCode.")
                     .setPositiveButton("Download & Install") { _, _ ->
-                        downloadAndInstallUpdate()
+                        downloadAndInstallUpdate(remote.sha256)
                     }
                     .setNegativeButton("Later", null)
                     .show()
@@ -1191,7 +1204,42 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun downloadAndInstallUpdate() {
+    private fun hasMatchingSigningCertificate(apkFile: File): Boolean {
+        return runCatching {
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PackageManager.GET_SIGNING_CERTIFICATES
+            } else {
+                @Suppress("DEPRECATION")
+                PackageManager.GET_SIGNATURES
+            }
+            val currentInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(flags.toLong()))
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, flags)
+            }
+            val archiveInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.PackageInfoFlags.of(flags.toLong()))
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageArchiveInfo(apkFile.absolutePath, flags)
+            } ?: return false
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val curSigs = currentInfo.signingInfo?.apkContentsSigners?.map { it.toCharsString() }?.toSet().orEmpty()
+                val arcSigs = archiveInfo.signingInfo?.apkContentsSigners?.map { it.toCharsString() }?.toSet().orEmpty()
+                curSigs.isNotEmpty() && curSigs == arcSigs
+            } else {
+                @Suppress("DEPRECATION")
+                val curSigs = currentInfo.signatures?.map { it.toCharsString() }?.toSet().orEmpty()
+                @Suppress("DEPRECATION")
+                val arcSigs = archiveInfo.signatures?.map { it.toCharsString() }?.toSet().orEmpty()
+                curSigs.isNotEmpty() && curSigs == arcSigs
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun downloadAndInstallUpdate(expectedSha256: String = "") {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
             AlertDialog.Builder(this)
                 .setTitle("Allow App Installs")
@@ -1225,6 +1273,17 @@ class MainActivity : AppCompatActivity() {
                 runCatching {
                     api.downloadApk(dest) { pct ->
                         runOnUiThread { statusView.text = "Downloading update... $pct%" }
+                    }
+                    if (expectedSha256.isNotBlank()) {
+                        val actual = BridgeSecurity.sha256Hex(dest)
+                        if (!actual.equals(expectedSha256.trim(), ignoreCase = true)) {
+                            dest.delete()
+                            throw IllegalStateException("APK SHA-256 mismatch")
+                        }
+                    }
+                    if (!hasMatchingSigningCertificate(dest)) {
+                        dest.delete()
+                        throw IllegalStateException("APK signing certificate mismatch")
                     }
                 }
             }

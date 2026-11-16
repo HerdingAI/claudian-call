@@ -8,9 +8,18 @@ enum class CallPhase {
     RECORDING,
     TRANSCRIBING,
     THINKING,
+    AWAITING_APPROVAL,
     SPEAKING,
     MUTED
 }
+
+data class PendingApproval(
+    val id: String,
+    val jobId: String,
+    val tool: String,
+    val summary: String,
+    val risk: String = "medium"
+)
 
 data class ChatMessage(
     val role: String,
@@ -68,9 +77,14 @@ data class CallSettings(
                     .putBoolean("bargeIn", bargeIn)
                     .apply()
             }
+            val legacyPlaintext = p.getString("authToken", null)
+            val token = TokenStore.loadToken(ctx, legacyPlaintext)
+            if (!legacyPlaintext.isNullOrEmpty()) {
+                p.edit().remove("authToken").apply()
+            }
             return CallSettings(
                 bridgeUrl = p.getString("bridgeUrl", "http://127.0.0.1:8790") ?: "http://127.0.0.1:8790",
-                authToken = p.getString("authToken", "") ?: "",
+                authToken = token,
                 provider = p.getString("provider", "claude") ?: "claude",
                 model = p.getString("model", "haiku") ?: "haiku",
                 workspaceDir = p.getString("workspaceDir", "") ?: "",
@@ -88,9 +102,10 @@ data class CallSettings(
         }
 
         fun save(ctx: Context, s: CallSettings) {
+            TokenStore.saveToken(ctx, s.authToken)
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .remove("authToken")
                 .putString("bridgeUrl", s.bridgeUrl.trim().trimEnd('/'))
-                .putString("authToken", s.authToken.trim())
                 .putString("provider", s.provider)
                 .putString("model", s.model)
                 .putString("workspaceDir", s.workspaceDir)

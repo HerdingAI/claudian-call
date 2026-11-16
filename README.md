@@ -15,7 +15,7 @@ Android suspends Obsidian's WebView and revokes `getUserMedia()` microphone capt
   - **Layer 2 (Neural VAD)**: On-device **Silero VAD v6** (`silero_vad_v6.onnx` via `onnxruntime-android` with `ALL_OPT` and `allow_spinning=0` for Tensor G5 / Pixel 10 Pro XL efficiency), requiring 5 consecutive speech frames (~160 ms) to interrupt TTS.
 - **Hardware Acoustic Echo Cancellation & Routing**: Uses `AudioRecord` (`VOICE_COMMUNICATION`) with `AcousticEchoCanceler` + `NoiseSuppressor`, ~256 ms pre-roll ring buffer, and `AudioTrack` (`USAGE_VOICE_COMMUNICATION`) with BLE Audio / Bluetooth SCO / Earpiece / Speakerphone routing.
 - **Multi-Provider, Workspaces & Dynamic Models**: Switch between **Claude Code** (`claude`), **Antigravity** (`agy`), and **OpenCode** (`opencode`), pick or create project folders (`📁 <workspace> ▾` via `GET/POST /workspaces`), and select models dynamically from `GET /models?provider=...`.
-- **Non-Interrupting Turn Queue**: Captures full utterances with `1800 ms` silence tolerance and speech-onset debouncing, queuing follow-ups while the agent is thinking instead of aborting the active harness turn.
+- **Non-Interrupting Turn Queue**: Captures full utterances with `1800 ms` silence tolerance, `600 ms` minimum speech, and 3-frame (~96 ms) speech-onset debouncing; **Barge-In** is disabled by default (`bargeIn = false`), and follow-up utterances queue while the agent is thinking instead of aborting the active harness turn.
 - **Session Isolation, 5s Recap & Save to Vault**: Start clean threads with `＋`, switch workspace-scoped conversations (`New conversation (N) ▾`), hear a 5-second catch-up via **`↻ Recap`**, and save notes or individual bubbles to your Obsidian vault via **`Save`** (or long-press).
 - **Live Tool Progress & Hybrid Text Input**: Real-time tool status (`Searching web…`, `Reading file…`) in the call card and lock-screen notification, plus a text/paste input bar for exact symbols or error logs mid-call.
 - **In-App Self-Update**: Automatically checks `GET /apk/version` on startup (and via **Check for App Update** in Settings), downloads `claudian-call.apk` with progress, and installs via Android `FileProvider`.
@@ -37,14 +37,14 @@ Android suspends Obsidian's WebView and revokes `getUserMedia()` microphone capt
 
 ## Build from Source
 
-Requires JDK 17 and Android SDK (API 34):
+Requires JDK 17 (full JDK with `jlink`, e.g., `~/.gradle/jdks/jdk-17.0.21+9`) and Android SDK (API 34):
 
 ```bash
-./gradlew assembleFdroidRelease   # F-Droid / FOSS build (no self-updater)
-./gradlew assembleDirectDebug     # Direct sideload build (includes /apk self-updater)
+JAVA_HOME=~/.gradle/jdks/jdk-17.0.21+9 ./gradlew assembleFdroidRelease   # F-Droid / FOSS build (no self-updater)
+JAVA_HOME=~/.gradle/jdks/jdk-17.0.21+9 ./gradlew assembleDirectDebug     # Direct sideload build (includes /apk self-updater)
 ```
 
-Output APKs: `app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk` and `app/build/outputs/apk/direct/debug/app-direct-debug.apk` (release copy in `dist/claudian-call.apk`).
+Current direct build: **`v0.6.8` (`versionCode = 14`)**. Output APKs: `app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk` and `app/build/outputs/apk/direct/debug/app-direct-debug.apk` (release copy in `dist/claudian-call.apk`).
 
 ## Claudian Suite
 

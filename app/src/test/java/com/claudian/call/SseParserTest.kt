@@ -112,26 +112,14 @@ class SseParserTest {
         assertEquals(listOf("second"), texts)
     }
 
-    // KNOWN BUG — flips in M4: a non-JSON data line throws JSONException and kills the stream
-    // (everything after it is never dispatched).
-    @Test fun nonJsonDataLineThrowsAndKillsStream() {
-        try {
-            run("event: text\ndata: not json\n\nevent: text\ndata: {\"fullText\":\"never\"}\n\n")
-            fail("expected JSONException")
-        } catch (e: JSONException) {
-            // expected today
-        }
-        assertTrue(texts.isEmpty())
+    @Test fun nonJsonDataLineIsIgnoredWithoutKillingStream() {
+        run("event: text\ndata: not json\n\nevent: text\ndata: {\"fullText\":\"recovered\"}\n\n")
+        assertEquals(listOf("recovered"), texts)
     }
 
-    // KNOWN BUG — flips in M4: the SSE spec says `[DONE]`-style sentinels and non-JSON data
-    // must be tolerated; today even a harmless sentinel line throws.
-    @Test fun doneSentinelDataThrows() {
-        try {
-            run("data: [DONE]\n\n")
-            fail("expected JSONException")
-        } catch (e: JSONException) {
-        }
+    @Test fun doneSentinelDataIsTolerated() {
+        run("data: [DONE]\n\n")
+        assertTrue(texts.isEmpty())
     }
 
     @Test fun dataWithoutEventBlankLineOnlyFlushesWhenDataPresent() {

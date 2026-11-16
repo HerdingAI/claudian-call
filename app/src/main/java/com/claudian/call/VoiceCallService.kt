@@ -32,6 +32,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import okhttp3.Call
 import java.nio.ByteBuffer
@@ -46,6 +47,8 @@ data class CallUiState(
     val isMuted: Boolean = false,
     val speakerOn: Boolean = false,
     val sessionId: String? = null,
+    val activeJobId: String? = null,
+    val pendingApproval: PendingApproval? = null,
     val callStartedAtMs: Long = 0L,
     val messages: List<ChatMessage> = emptyList(),
     val statusNote: String = "Ready"
@@ -579,6 +582,32 @@ class VoiceCallService : Service() {
     }
 
     private fun enqueueOrStartTurn(text: String) {
+        val pending = _uiState.value.pendingApproval
+        if (pending != null) {
+            when (ApprovalClassifier.classify(text)) {
+                ApprovalIntent.ALLOW -> {
+                    serviceScope.launch {
+                        runCatching { api.resolveApproval(pending.id, "allow") }
+                        _uiState.value = _uiState.value.copy(pendingApproval = null, phase = CallPhase.THINKING, statusNote = "Approved")
+                        enqueueSentence(ttsGeneration.get(), "Approved.")
+                    }
+                }
+                ApprovalIntent.DENY -> {
+                    serviceScope.launch {
+                        runCatching { api.resolveApproval(pending.id, "deny") }
+                        _uiState.value = _uiState.value.copy(pendingApproval = null, phase = CallPhase.THINKING, statusNote = "Denied")
+                        enqueueSentence(ttsGeneration.get(), "Denied.")
+                    }
+                }
+                ApprovalIntent.REPEAT -> {
+                    enqueueSentence(ttsGeneration.get(), pending.summary)
+                }
+                ApprovalIntent.AMBIGUOUS -> {
+                    enqueueSentence(ttsGeneration.get(), "Please say allow or deny. ${pending.summary}")
+                }
+            }
+            return
+        }
         synchronized(queueLock) {
             if (turnJob?.isActive == true) {
                 pendingTranscripts.add(text)
@@ -633,16 +662,18 @@ class VoiceCallService : Service() {
     }
 
     private fun handleTurnError(t: Throwable) {
+        val spoken = ErrorSpeech.spokenMessage(ErrorSpeech.classify(t), t.message.orEmpty())
         val list = _uiState.value.messages.toMutableList()
         val last = list.lastOrNull()
         if (last != null && last.role == "assistant" && last.text == "...") {
-            list[list.lastIndex] = ChatMessage("assistant", "Error: ${t.message ?: "Network error"}")
+            list[list.lastIndex] = ChatMessage("assistant", spoken)
         }
         _uiState.value = _uiState.value.copy(
             phase = if (_uiState.value.isMuted) CallPhase.MUTED else CallPhase.LISTENING,
             messages = list,
-            statusNote = "Error: ${t.message ?: "retry listening"}"
+            statusNote = spoken
         )
+        enqueueSentence(ttsGeneration.get(), spoken)
         updateNotification()
     }
 
@@ -662,11 +693,20 @@ class VoiceCallService : Service() {
         val gen = ttsGeneration.incrementAndGet()
         ttsQueue.clear()
         var spokenCursor = 0
+        val idemKey = java.util.UUID.randomUUID().toString()
+        val jobId = api.createJob(transcript, _uiState.value.sessionId, idemKey)
+        _uiState.value = _uiState.value.copy(activeJobId = jobId)
 
-        api.streamChat(
-                    prompt = transcript,
-                    sessionId = _uiState.value.sessionId,
+        var lastEventId = 0L
+        var doneReceived = false
+        var attempt = 0
+        while (!doneReceived && _uiState.value.inCall) {
+            try {
+                api.streamJobEvents(
+                    jobId = jobId,
+                    lastEventId = lastEventId,
                     onCallCreated = { activeChatCall = it },
+                    onEventId = { id -> if (id > lastEventId) lastEventId = id },
                     onSession = { sid ->
                         val s = CallSettings.load(this@VoiceCallService).copy(lastSessionId = sid)
                         CallSettings.save(this@VoiceCallService, s)
@@ -690,7 +730,25 @@ class VoiceCallService : Service() {
                             enqueueSentence(gen, s)
                         }
                     },
+                    onPermissionRequest = { req ->
+                        _uiState.value = _uiState.value.copy(
+                            phase = CallPhase.AWAITING_APPROVAL,
+                            pendingApproval = req,
+                            statusNote = req.summary
+                        )
+                        enqueueSentence(gen, req.summary)
+                        updateNotification()
+                    },
+                    onPermissionResolved = {
+                        _uiState.value = _uiState.value.copy(
+                            phase = CallPhase.THINKING,
+                            pendingApproval = null,
+                            statusNote = "Resuming..."
+                        )
+                        updateNotification()
+                    },
                     onDone = { sid, fullText ->
+                        doneReceived = true
                         val finalSid = sid ?: _uiState.value.sessionId
                         if (!finalSid.isNullOrBlank()) {
                             val s = CallSettings.load(this@VoiceCallService).copy(lastSessionId = finalSid)
@@ -702,6 +760,8 @@ class VoiceCallService : Service() {
                         }
                         _uiState.value = _uiState.value.copy(
                             sessionId = finalSid,
+                            activeJobId = null,
+                            pendingApproval = null,
                             messages = list
                         )
                         val body = if (fullText.isNotBlank()) fullText else list.getOrNull(assistantIdx)?.text.orEmpty()
@@ -711,6 +771,14 @@ class VoiceCallService : Service() {
                         }
                     }
                 )
+            } catch (t: Throwable) {
+                if (doneReceived || !_uiState.value.inCall || activeChatCall?.isCanceled() == true || attempt >= 3) {
+                    throw t
+                }
+                attempt++
+                delay(800L * attempt)
+            }
+        }
     }
 
     private fun enqueueSentence(gen: Int, rawSentence: String) {

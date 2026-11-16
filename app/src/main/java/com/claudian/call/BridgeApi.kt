@@ -20,7 +20,8 @@ import java.util.concurrent.TimeUnit
 data class ApkVersionInfo(
     val versionCode: Long,
     val versionName: String,
-    val sizeBytes: Long
+    val sizeBytes: Long,
+    val sha256: String = ""
 )
 
 data class ModelOption(
@@ -46,7 +47,13 @@ class BridgeApi(private val getSettings: () -> CallSettings) {
         .readTimeout(0, TimeUnit.SECONDS)
         .build()
 
-    private fun baseUrl(): String = getSettings().bridgeUrl.trim().trimEnd('/')
+    private fun baseUrl(): String {
+        val url = getSettings().bridgeUrl.trim().trimEnd('/')
+        if (!BridgeSecurity.isAllowedBridgeUrl(url)) {
+            throw IOException("Cleartext HTTP is only allowed for private LAN or Tailscale hosts; use HTTPS for public hosts")
+        }
+        return url
+    }
 
     private fun Request.Builder.withAuth(): Request.Builder {
         val tok = getSettings().authToken.trim()
@@ -86,6 +93,7 @@ class BridgeApi(private val getSettings: () -> CallSettings) {
     fun getApkVersion(): ApkVersionInfo {
         val req = Request.Builder()
             .url("${baseUrl()}/apk/version")
+            .withAuth()
             .get()
             .build()
         client.newCall(req).execute().use { resp ->
@@ -94,7 +102,8 @@ class BridgeApi(private val getSettings: () -> CallSettings) {
             return ApkVersionInfo(
                 versionCode = json.optLong("versionCode", 1L),
                 versionName = json.optString("versionName", "0.1.0"),
-                sizeBytes = json.optLong("size", 0L)
+                sizeBytes = json.optLong("size", 0L),
+                sha256 = json.optString("sha256", "")
             )
         }
     }
@@ -104,6 +113,7 @@ class BridgeApi(private val getSettings: () -> CallSettings) {
         val tmp = File(destFile.parentFile, "${destFile.name}.tmp")
         val req = Request.Builder()
             .url("${baseUrl()}/apk")
+            .withAuth()
             .get()
             .build()
         client.newCall(req).execute().use { resp ->
@@ -315,6 +325,78 @@ class BridgeApi(private val getSettings: () -> CallSettings) {
         }
     }
 
+    fun createJob(prompt: String, sessionId: String?, idempotencyKey: String): String {
+        val s = getSettings()
+        val payload = JSONObject()
+            .put("prompt", prompt)
+            .put("provider", s.provider.ifBlank { "claude" })
+        if (s.model.isNotBlank()) payload.put("model", s.model.trim())
+        if (s.workspaceDir.isNotBlank()) payload.put("cwd", s.workspaceDir.trim())
+        if (!sessionId.isNullOrBlank()) payload.put("sessionId", sessionId)
+        if (s.mobileSystemPrompt.isNotBlank()) payload.put("systemPrompt", s.mobileSystemPrompt.trim())
+
+        val req = Request.Builder()
+            .url("${baseUrl()}/jobs")
+            .withAuth()
+            .header("Idempotency-Key", idempotencyKey)
+            .post(payload.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw IOException("Job HTTP ${resp.code}")
+            val json = JSONObject(resp.body?.string() ?: "{}")
+            return json.optJSONObject("job")?.optString("id").orEmpty().ifBlank {
+                throw IOException("Missing job id")
+            }
+        }
+    }
+
+    fun resolveApproval(approvalId: String, decision: String) {
+        val payload = JSONObject().put("decision", decision)
+        val req = Request.Builder()
+            .url("${baseUrl()}/approvals/$approvalId")
+            .withAuth()
+            .post(payload.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw IOException("Approval HTTP ${resp.code}")
+        }
+    }
+
+    fun streamJobEvents(
+        jobId: String,
+        lastEventId: Long = 0L,
+        onCallCreated: (Call) -> Unit,
+        onEventId: (Long) -> Unit = {},
+        onSession: (String) -> Unit,
+        onStatus: (String) -> Unit = {},
+        onText: (String) -> Unit,
+        onPermissionRequest: (PendingApproval) -> Unit = {},
+        onPermissionResolved: (String) -> Unit = {},
+        onDone: (String?, String) -> Unit
+    ) {
+        val reqBuilder = Request.Builder()
+            .url("${baseUrl()}/jobs/$jobId/events")
+            .withAuth()
+            .get()
+        if (lastEventId > 0L) reqBuilder.header("Last-Event-ID", lastEventId.toString())
+
+        val call = streamClient.newCall(reqBuilder.build())
+        onCallCreated(call)
+        call.execute().use { resp ->
+            if (!resp.isSuccessful) throw IOException("Job events HTTP ${resp.code}")
+            val source = resp.body?.source() ?: throw IOException("Empty job stream")
+            SseParser(
+                onSession = onSession,
+                onStatus = onStatus,
+                onText = onText,
+                onDone = onDone,
+                onEventId = onEventId,
+                onPermissionRequest = onPermissionRequest,
+                onPermissionResolved = onPermissionResolved
+            ).readAll(source)
+        }
+    }
+
     fun streamChat(
         prompt: String,
         sessionId: String?,
@@ -384,7 +466,10 @@ class SseParser(
     private val onSession: (String) -> Unit,
     private val onStatus: (String) -> Unit,
     private val onText: (String) -> Unit,
-    private val onDone: (String?, String) -> Unit
+    private val onDone: (String?, String) -> Unit,
+    private val onEventId: (Long) -> Unit = {},
+    private val onPermissionRequest: (PendingApproval) -> Unit = {},
+    private val onPermissionResolved: (String) -> Unit = {}
 ) {
     private var eventName = "message"
     private var dataLine = ""
@@ -396,6 +481,8 @@ class SseParser(
             }
             eventName = "message"
             dataLine = ""
+        } else if (line.startsWith("id:")) {
+            line.substring(3).trim().toLongOrNull()?.let(onEventId)
         } else if (line.startsWith("event:")) {
             eventName = line.substring(6).trim()
         } else if (line.startsWith("data:")) {
@@ -419,18 +506,32 @@ class SseParser(
     }
 
     private fun dispatch(eventName: String, dataLine: String) {
-        val payload = JSONObject(dataLine)
+        val payload = runCatching { JSONObject(dataLine) }.getOrNull() ?: return
         when (eventName) {
             "session" -> {
                 val sid = payload.optString("sessionId")
                 if (sid.isNotEmpty()) onSession(sid)
             }
             "status" -> {
-                val st = payload.optString("status")
+                val st = payload.optString("message").ifBlank { payload.optString("status") }
                 if (st.isNotEmpty()) onStatus(st)
             }
             "text" -> {
                 onText(payload.optString("fullText", ""))
+            }
+            "permission_request" -> {
+                val id = payload.optString("id")
+                val jobId = payload.optString("jobId")
+                val tool = payload.optString("tool", "tool")
+                val summary = payload.optString("summary", "Allow this action?")
+                val risk = payload.optString("risk", "medium")
+                if (id.isNotEmpty()) {
+                    onPermissionRequest(PendingApproval(id, jobId, tool, summary, risk))
+                }
+            }
+            "permission_resolved" -> {
+                val id = payload.optString("id")
+                if (id.isNotEmpty()) onPermissionResolved(id)
             }
             "done" -> {
                 val sid = payload.optString("sessionId").takeIf { it.isNotEmpty() && it != "null" }
