@@ -48,7 +48,7 @@ data class CallSettings(
     val speechRate: Float = 1.05f,
     val vadThreshold: Float = 0.015f,
     val vadSilenceMs: Long = 1800L,
-    val minSpeechMs: Long = 600L,
+    val minSpeechMs: Long = 200L,
     val bargeIn: Boolean = false,
     val speakerOn: Boolean = false,
     val lastSessionId: String = "",
@@ -63,7 +63,7 @@ data class CallSettings(
             val migrated = PrefsMigration.migrate(
                 savedVersion,
                 p.getLong("vadSilenceMs", 1800L),
-                p.getLong("minSpeechMs", 600L),
+                p.getLong("minSpeechMs", 200L),
                 p.getBoolean("bargeIn", false)
             )
             val vadSilence = migrated.vadSilenceMs
@@ -126,7 +126,7 @@ data class CallSettings(
 
 /** Pure core of the SharedPreferences version migration (no Android dependencies). */
 object PrefsMigration {
-    const val CURRENT_PREFS_VERSION = 2
+    const val CURRENT_PREFS_VERSION = 3
 
     data class VadPrefs(val vadSilenceMs: Long, val minSpeechMs: Long, val bargeIn: Boolean)
 
@@ -135,7 +135,7 @@ object PrefsMigration {
         var vadSilence = vadSilenceMs
         var minSpeech = minSpeechMs
         if (vadSilence < 1200L) vadSilence = 1800L
-        if (minSpeech < 500L) minSpeech = 600L
+        if (minSpeech > 400L || minSpeech < 150L) minSpeech = 200L
         return VadPrefs(vadSilence, minSpeech, false)
     }
 }

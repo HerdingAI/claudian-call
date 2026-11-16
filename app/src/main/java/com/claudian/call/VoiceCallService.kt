@@ -92,11 +92,17 @@ class VoiceCallService : Service() {
 
     private var aec: AcousticEchoCanceler? = null
     private var ns: NoiseSuppressor? = null
+    private var androidTts: android.speech.tts.TextToSpeech? = null
+    @Volatile
+    private var androidTtsReady: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
         api = BridgeApi { CallSettings.load(this) }
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        androidTts = android.speech.tts.TextToSpeech(this) { status ->
+            androidTtsReady = status == android.speech.tts.TextToSpeech.SUCCESS
+        }
         createNotificationChannel()
     }
 
@@ -484,6 +490,7 @@ class VoiceCallService : Service() {
                                 preRoll.clear()
                                 onsetFrames.clear()
                                 onsetStreak = 0
+                                android.util.Log.i("VoiceCallService", "VAD speech start (rms=${stats.bandRms}, prob=$speechProb)")
                                 _uiState.value = _uiState.value.copy(
                                     phase = CallPhase.RECORDING,
                                     statusNote = "Hearing speech..."
@@ -497,6 +504,7 @@ class VoiceCallService : Service() {
                         if (now - lastVoiceMs >= settings.vadSilenceMs) {
                             speaking = false
                             val durMs = lastVoiceMs - speechStartMs
+                            android.util.Log.i("VoiceCallService", "VAD speech end durMs=$durMs frames=${speechFrames.size}")
                             if (durMs >= settings.minSpeechMs && speechFrames.isNotEmpty()) {
                                 val totalSamples = speechFrames.sumOf { it.size }
                                 val pcm = ShortArray(totalSamples)
@@ -559,6 +567,7 @@ class VoiceCallService : Service() {
 
                 val wav = BridgeApi.pcm16ToWav(pcm, 16000)
                 val transcript = api.transcribeWav(wav).trim()
+                android.util.Log.i("VoiceCallService", "STT transcript len=${transcript.length}: $transcript")
                 if (transcript.isBlank()) {
                     if (turnJob?.isActive != true && !ttsSpeaking.get()) {
                         _uiState.value = _uiState.value.copy(
@@ -662,6 +671,7 @@ class VoiceCallService : Service() {
     }
 
     private fun handleTurnError(t: Throwable) {
+        android.util.Log.e("VoiceCallService", "Turn error", t)
         val spoken = ErrorSpeech.spokenMessage(ErrorSpeech.classify(t), t.message.orEmpty())
         val list = _uiState.value.messages.toMutableList()
         val last = list.lastOrNull()
@@ -802,9 +812,13 @@ class VoiceCallService : Service() {
                     )
                     updateNotification()
 
-                    val wavBytes = api.synthesizeTts(text)
+                    val wavBytes = runCatching { api.synthesizeTts(text) }.getOrNull()
                     if (gen != ttsGeneration.get() || !_uiState.value.inCall) continue
-                    playWavBlocking(wavBytes, gen)
+                    if (wavBytes != null) {
+                        playWavBlocking(wavBytes, gen)
+                    } else if (androidTtsReady) {
+                        androidTts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_ADD, null, "claudian-$gen")
+                    }
                 } catch (_: InterruptedException) {
                     break
                 } catch (_: Throwable) {

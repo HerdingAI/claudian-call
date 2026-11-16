@@ -144,12 +144,12 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         api = BridgeApi { CallSettings.load(this) }
-        handlePairingIntent(intent)
+        val pairingShown = handlePairingIntent(intent)
         selectedSessionId = CallSettings.load(this).lastSessionId.ifBlank { null }
         buildUi()
         bindService(Intent(this, VoiceCallService::class.java), conn, Context.BIND_AUTO_CREATE)
         refreshSessionsAndHealth()
-        if (CallSettings.load(this).authToken.isBlank()) {
+        if (!pairingShown && CallSettings.load(this).authToken.isBlank()) {
             showFirstRunOnboarding()
         }
         if (BuildConfig.ENABLE_SELF_UPDATE) {

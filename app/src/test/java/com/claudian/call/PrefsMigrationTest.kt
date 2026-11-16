@@ -6,40 +6,40 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PrefsMigrationTest {
-    @Test fun currentVersionIsTwo() = assertEquals(2, PrefsMigration.CURRENT_PREFS_VERSION)
+    @Test fun currentVersionIsThree() = assertEquals(3, PrefsMigration.CURRENT_PREFS_VERSION)
 
-    @Test fun v1LowVadValuesAreRaised() {
-        val r = PrefsMigration.migrate(1, 900L, 300L, true)
+    @Test fun v1LowVadValuesAreRaisedAndHighMinSpeechLowered() {
+        val r = PrefsMigration.migrate(1, 900L, 600L, true)
         assertEquals(1800L, r.vadSilenceMs)
-        assertEquals(600L, r.minSpeechMs)
+        assertEquals(200L, r.minSpeechMs)
         assertFalse(r.bargeIn)
     }
 
     @Test fun v1ValuesAtThresholdAreKept() {
-        val r = PrefsMigration.migrate(1, 1200L, 500L, false)
+        val r = PrefsMigration.migrate(1, 1200L, 300L, false)
         assertEquals(1200L, r.vadSilenceMs)
-        assertEquals(500L, r.minSpeechMs)
+        assertEquals(300L, r.minSpeechMs)
     }
 
-    @Test fun v1HighValuesKeptButBargeInForcedOff() {
-        val r = PrefsMigration.migrate(1, 2500L, 900L, true)
+    @Test fun v1HighVadKeptButBargeInForcedOff() {
+        val r = PrefsMigration.migrate(1, 2500L, 250L, true)
         assertEquals(2500L, r.vadSilenceMs)
-        assertEquals(900L, r.minSpeechMs)
+        assertEquals(250L, r.minSpeechMs)
         assertFalse(r.bargeIn)
     }
 
-    @Test fun justBelowThresholdsAreRaised() {
-        val r = PrefsMigration.migrate(1, 1199L, 499L, false)
+    @Test fun justBelowThresholdsAreAdjusted() {
+        val r = PrefsMigration.migrate(1, 1199L, 100L, false)
         assertEquals(1800L, r.vadSilenceMs)
-        assertEquals(600L, r.minSpeechMs)
+        assertEquals(200L, r.minSpeechMs)
     }
 
     @Test fun v0IsTreatedLikeV1() {
         assertEquals(1800L, PrefsMigration.migrate(0, 100L, 100L, false).vadSilenceMs)
     }
 
-    @Test fun v2IsUntouchedIncludingBargeIn() {
-        val r = PrefsMigration.migrate(2, 400L, 100L, true)
+    @Test fun v3IsUntouchedIncludingBargeIn() {
+        val r = PrefsMigration.migrate(3, 400L, 100L, true)
         assertEquals(400L, r.vadSilenceMs)
         assertEquals(100L, r.minSpeechMs)
         assertTrue(r.bargeIn)
