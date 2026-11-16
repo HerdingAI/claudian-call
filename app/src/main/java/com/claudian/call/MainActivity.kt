@@ -1055,7 +1055,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("Claudian Call Settings")
+            .setTitle("Claudian Call v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})")
             .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("Save") { _, _ ->
                 var rawUrl = urlInput.text.toString().trim().trimEnd('/')

@@ -422,7 +422,9 @@ class VoiceCallService : Service() {
                     }
 
                     val settings = CallSettings.load(this@VoiceCallService)
-                    val isTtsActive = ttsSpeaking.get() || (System.currentTimeMillis() - lastTtsEndedAtMs < 400L)
+                    val isTtsActive = ttsSpeaking.get() ||
+                        (androidTts?.isSpeaking == true) ||
+                        (System.currentTimeMillis() - lastTtsEndedAtMs < 400L)
 
                     val stats = bandAnalyzer.analyze(frameBuf, read)
                     val speechProb = if (silero != null && read == frameSamples) {
@@ -983,6 +985,11 @@ class VoiceCallService : Service() {
 
     override fun onDestroy() {
         stopCall()
+        runCatching {
+            androidTts?.stop()
+            androidTts?.shutdown()
+        }
+        androidTts = null
         serviceScope.cancel()
         super.onDestroy()
     }
