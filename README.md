@@ -44,7 +44,7 @@ JAVA_HOME=~/.gradle/jdks/jdk-17.0.21+9 ./gradlew assembleFdroidRelease   # F-Dro
 JAVA_HOME=~/.gradle/jdks/jdk-17.0.21+9 ./gradlew assembleDirectDebug     # Direct sideload build (includes /apk self-updater)
 ```
 
-Current direct build: **`v0.6.8` (`versionCode = 14`)**. Output APKs: `app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk` and `app/build/outputs/apk/direct/debug/app-direct-debug.apk` (release copy in `dist/claudian-call.apk`).
+Current direct build: **`v0.6.9` (`versionCode = 15`)**. Output APKs: `app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk` and `app/build/outputs/apk/direct/debug/app-direct-debug.apk` (release copy in `dist/claudian-call.apk`).
 
 ## Claudian Suite
 
